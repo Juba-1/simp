@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".next",
+    "out",
+    "frontend",
+    "test",
+    "coverage",
+    "**/*spec.ts",
+    "**/*.tsbuildinfo"
+  ]
+}

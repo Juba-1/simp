@@ -1,0 +1,702 @@
+// SIMP Platform - Multi-Tenant Schema (Sprint 1 Foundation)
+// Hierarchy: Client -> Project -> Consultant / Main Contractor / Laboratory / Sub-contractors
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────────────────
+
+enum OrganizationType {
+  CLIENT
+  CONSULTANT
+  MAIN_CONTRACTOR
+  LABORATORY
+  SUB_CONTRACTOR
+}
+
+enum ProjectOrganizationRole {
+  OWNER
+  CONSULTANT
+  MAIN_CONTRACTOR
+  LABORATORY
+  SUB_CONTRACTOR
+}
+
+enum ProjectStatus {
+  DRAFT
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+/// The 15 standardized PMIS form types from the PRD matrix
+enum StandardFormCode {
+  MAR
+  MIR
+  MDR
+  SDS
+  MSS
+  WIR
+  NCR
+  SOR
+  RFI
+  CVI
+  DPR
+  VO
+  IPC
+  AS_BUILT
+  PTW
+  IR
+  LTR
+}
+
+enum FormInstanceStatus {
+  DRAFT
+  SUBMITTED
+  PENDING_INTERNAL_APPROVAL
+  PENDING_EXTERNAL_APPROVAL
+  APPROVED
+  REJECTED
+  SLA_BREACHED
+  ARCHIVED
+}
+
+enum WorkflowPhase {
+  NONE
+  INTERNAL_REVIEW
+  EXTERNAL_REVIEW
+  COMPLETED
+}
+
+enum ApprovalActionType {
+  SUBMIT
+  RESUBMIT
+  APPROVE_INTERNAL
+  REJECT_INTERNAL
+  APPROVE_EXTERNAL
+  REJECT_EXTERNAL
+  SLA_ESCALATION
+  AUTO_MATERIAL_POST
+}
+
+enum MaterialLedgerType {
+  MIR_CREDIT
+  WIR_DEBIT
+  MDR_DEBIT
+  ADJUSTMENT
+}
+
+enum EscalationSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum IpcStatus {
+  DRAFT
+  PENDING_CONSULTANT_REVIEW
+  PENDING_CLIENT_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+enum LabTestRequestStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum LabTestResultStatus {
+  PASS
+  FAIL
+  INCONCLUSIVE
+}
+
+enum AuditSource {
+  API
+  SYNC
+  SYSTEM
+  APPROVAL
+}
+
+enum SyncActionType {
+  FORM_INSTANCE_UPSERT
+  FORM_INSTANCE_DELETE
+  FILE_ATTACHMENT_LINK
+}
+
+enum SyncActionResult {
+  APPLIED
+  SKIPPED_STALE
+  CONFLICT_OVERWRITTEN
+  FAILED
+}
+
+// ─── Core Tenant Entities ────────────────────────────────────────────────────
+
+model Organization {
+  id        String           @id @default(uuid()) @db.Uuid
+  name      String
+  nameAr    String?          @map("name_ar")
+  slug      String           @unique
+  type      OrganizationType
+  settings  Json             @default("{}")
+  isActive  Boolean          @default(true) @map("is_active")
+  createdAt DateTime         @default(now()) @map("created_at")
+  updatedAt DateTime         @updatedAt @map("updated_at")
+  deletedAt DateTime?        @map("deleted_at")
+
+  users               User[]
+  roles               Role[]
+  ownedProjects       Project[]             @relation("ProjectOwner")
+  projectMemberships  ProjectOrganization[]
+  invitedProjects     ProjectOrganization[] @relation("InvitedByOrg")
+  mainContractorLinks SubContractorLink[]   @relation("MainContractor")
+  subContractorLinks  SubContractorLink[]   @relation("SubContractor")
+  contractorIpcs      InterimPaymentCertificate[]
+
+  @@index([type])
+  @@index([deletedAt])
+  @@map("organizations")
+}
+
+model Role {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  name           String
+  nameAr         String?   @map("name_ar")
+  permissions    Json      @default("[]")
+  isSystem       Boolean   @default(false) @map("is_system")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  users        User[]
+
+  @@unique([organizationId, name])
+  @@index([deletedAt])
+  @@map("roles")
+}
+
+model User {
+  id             String    @id @default(uuid()) @db.Uuid
+  email          String    @unique
+  username       String?   @unique
+  passwordHash   String    @map("password_hash")
+  firstName      String    @map("first_name")
+  lastName       String    @map("last_name")
+  firstNameAr    String?   @map("first_name_ar")
+  lastNameAr     String?   @map("last_name_ar")
+  organizationId String    @map("organization_id") @db.Uuid
+  roleId         String?   @map("role_id") @db.Uuid
+  isOrgAdmin     Boolean   @default(false) @map("is_org_admin")
+  isSuperAdmin   Boolean   @default(false) @map("is_super_admin")
+  isActive       Boolean   @default(true) @map("is_active")
+  avatarUrl      String?   @map("avatar_url")
+  preferences    Json      @default("{}")
+  lastLoginAt    DateTime? @map("last_login_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  deletedAt      DateTime? @map("deleted_at")
+
+  organization         Organization        @relation(fields: [organizationId], references: [id])
+  role                 Role?               @relation(fields: [roleId], references: [id])
+  projectAssignments   ProjectUser[]
+  subContractorInvites SubContractorLink[]
+  createdFormInstances FormInstance[]      @relation("FormInstanceCreator")
+  uploadedFiles        FileAttachment[]
+  approvalActions      ApprovalRecord[]
+  createdIpcs          InterimPaymentCertificate[] @relation("IpcCreator")
+  labTestRequests      LabTestRequest[]            @relation("LabTestRequester")
+  labTestResults       LabTestResult[]
+
+  @@index([organizationId])
+  @@index([deletedAt])
+  @@map("users")
+}
+
+// ─── Projects & Multi-Org Participation ──────────────────────────────────────
+
+model Project {
+  id          String        @id @default(uuid()) @db.Uuid
+  name        String
+  nameAr      String?       @map("name_ar")
+  code        String
+  description String?
+  ownerOrgId  String        @map("owner_org_id") @db.Uuid
+  status      ProjectStatus @default(DRAFT)
+  settings    Json          @default("{}")
+  startDate   DateTime?     @map("start_date")
+  endDate     DateTime?     @map("end_date")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+  deletedAt   DateTime?     @map("deleted_at")
+
+  ownerOrg           Organization          @relation("ProjectOwner", fields: [ownerOrgId], references: [id])
+  organizations      ProjectOrganization[]
+  userAssignments    ProjectUser[]
+  subContractorLinks SubContractorLink[]
+  formTemplates      FormTemplate[]
+  formInstances      FormInstance[]
+  fileAttachments    FileAttachment[]
+  workflowPolicies   WorkflowPolicy[]
+  slaEscalations     SlaEscalation[]
+  materialInventories MaterialInventory[]
+  interimPaymentCertificates InterimPaymentCertificate[]
+  labTestRequests    LabTestRequest[]
+
+  @@unique([ownerOrgId, code])
+  @@index([ownerOrgId])
+  @@index([status])
+  @@index([deletedAt])
+  @@map("projects")
+}
+
+/// Links an organization to a project with a specific role (Consultant, Contractor, etc.)
+model ProjectOrganization {
+  id             String                  @id @default(uuid()) @db.Uuid
+  projectId      String                  @map("project_id") @db.Uuid
+  organizationId String                  @map("organization_id") @db.Uuid
+  role           ProjectOrganizationRole
+  invitedByOrgId String?                 @map("invited_by_org_id") @db.Uuid
+  joinedAt       DateTime                @default(now()) @map("joined_at")
+  createdAt      DateTime                @default(now()) @map("created_at")
+  updatedAt      DateTime                @updatedAt @map("updated_at")
+  deletedAt      DateTime?               @map("deleted_at")
+
+  project      Project       @relation(fields: [projectId], references: [id])
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  invitedByOrg Organization? @relation("InvitedByOrg", fields: [invitedByOrgId], references: [id])
+
+  @@unique([projectId, organizationId])
+  @@index([organizationId])
+  @@index([deletedAt])
+  @@map("project_organizations")
+}
+
+/// Main Contractor invites Sub-contractors; data rolls up to Main Contractor
+model SubContractorLink {
+  id               String    @id @default(uuid()) @db.Uuid
+  projectId        String    @map("project_id") @db.Uuid
+  mainContractorId String    @map("main_contractor_id") @db.Uuid
+  subContractorId  String    @map("sub_contractor_id") @db.Uuid
+  invitedByUserId  String?   @map("invited_by_user_id") @db.Uuid
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  project        Project      @relation(fields: [projectId], references: [id])
+  mainContractor Organization @relation("MainContractor", fields: [mainContractorId], references: [id])
+  subContractor  Organization @relation("SubContractor", fields: [subContractorId], references: [id])
+  invitedBy      User?        @relation(fields: [invitedByUserId], references: [id])
+
+  @@unique([projectId, subContractorId])
+  @@index([mainContractorId])
+  @@index([deletedAt])
+  @@map("sub_contractor_links")
+}
+
+/// Org Admins assign users to specific projects
+model ProjectUser {
+  id        String    @id @default(uuid()) @db.Uuid
+  projectId String    @map("project_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@unique([projectId, userId])
+  @@index([userId])
+  @@index([deletedAt])
+  @@map("project_users")
+}
+
+// ─── Dynamic Form Engine (JSONB) ─────────────────────────────────────────────
+
+/// Defines the JSON schema for a form type (WIR, NCR, etc.) — never hardcoded tables
+model FormTemplate {
+  id             String           @id @default(uuid()) @db.Uuid
+  projectId      String           @map("project_id") @db.Uuid
+  code           StandardFormCode
+  name           String
+  nameAr         String?          @map("name_ar")
+  version        Int              @default(1)
+  schema         Json
+  uiSchema       Json?            @map("ui_schema")
+  isActive       Boolean          @default(true) @map("is_active")
+  createdByOrgId String           @map("created_by_org_id") @db.Uuid
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+  deletedAt      DateTime?        @map("deleted_at")
+
+  project   Project        @relation(fields: [projectId], references: [id])
+  instances FormInstance[]
+
+  @@unique([projectId, code, version])
+  @@index([code])
+  @@index([projectId])
+  @@index([deletedAt])
+  @@map("form_templates")
+}
+
+/// Stores submitted form data in JSONB; comments + status live outside payload for fast queries
+model FormInstance {
+  id                  String             @id @default(uuid()) @db.Uuid
+  projectId           String             @map("project_id") @db.Uuid
+  templateId          String             @map("template_id") @db.Uuid
+  templateVersion     Int                @map("template_version")
+  organizationId      String             @map("organization_id") @db.Uuid
+  createdByUserId     String             @map("created_by_user_id") @db.Uuid
+  referenceNumber     String?            @map("reference_number")
+  revisionNumber      Int                @default(0) @map("revision_number")
+  comments            String             @default("")
+  status              FormInstanceStatus @default(DRAFT)
+  workflowPhase       WorkflowPhase      @default(NONE) @map("workflow_phase")
+  currentPendingOrgType OrganizationType? @map("current_pending_org_type")
+  data                Json               @default("{}")
+  deviceTimestamp     DateTime           @map("device_timestamp")
+  serverSyncTimestamp DateTime?          @map("server_sync_timestamp")
+  timeSpoofingFlag    Boolean            @default(false) @map("time_spoofing_flag")
+  liabilityShiftRedAlert Boolean         @default(false) @map("liability_shift_red_alert")
+  slaBreached         Boolean            @default(false) @map("sla_breached")
+  slaBreachedAt       DateTime?          @map("sla_breached_at")
+  submittedAt         DateTime?          @map("submitted_at")
+  externalReviewStartedAt DateTime?      @map("external_review_started_at")
+  isBilled            Boolean            @default(false) @map("is_billed")
+  ipcId               String?            @map("ipc_id") @db.Uuid
+  clientRevision      Int                @default(1) @map("client_revision")
+  createdAt           DateTime           @default(now()) @map("created_at")
+  updatedAt           DateTime           @updatedAt @map("updated_at")
+  deletedAt           DateTime?          @map("deleted_at")
+
+  project             Project             @relation(fields: [projectId], references: [id])
+  template            FormTemplate        @relation(fields: [templateId], references: [id])
+  createdBy           User                @relation("FormInstanceCreator", fields: [createdByUserId], references: [id])
+  attachments         FileAttachment[]
+  approvalRecords     ApprovalRecord[]
+  slaEscalations      SlaEscalation[]
+  materialInventory   MaterialInventory?
+  materialLedgerEntries MaterialLedgerEntry[]
+  ipcLineItem         IpcLineItem?
+  ipc                 InterimPaymentCertificate? @relation(fields: [ipcId], references: [id])
+  labTestRequests     LabTestRequest[]
+
+  @@index([projectId, status])
+  @@index([isBilled])
+  @@index([ipcId])
+  @@index([workflowPhase])
+  @@index([slaBreached])
+  @@index([liabilityShiftRedAlert])
+  @@index([templateId])
+  @@index([organizationId])
+  @@index([deviceTimestamp])
+  @@index([deletedAt])
+  @@map("form_instances")
+}
+
+// ─── Secure Camera-Only File Attachments ─────────────────────────────────────
+
+model FileAttachment {
+  id                String    @id @default(uuid()) @db.Uuid
+  projectId         String    @map("project_id") @db.Uuid
+  formInstanceId    String?   @map("form_instance_id") @db.Uuid
+  uploadedByUserId  String    @map("uploaded_by_user_id") @db.Uuid
+  organizationId    String    @map("organization_id") @db.Uuid
+  originalFilename  String    @map("original_filename")
+  mimeType          String    @map("mime_type")
+  sizeBytes         Int       @map("size_bytes")
+  storageKey        String    @map("storage_key")
+  gpsLat            Decimal   @map("gps_lat") @db.Decimal(10, 7)
+  gpsLng            Decimal   @map("gps_lng") @db.Decimal(10, 7)
+  captureTimestamp  DateTime  @map("capture_timestamp")
+  serverReceivedAt  DateTime  @default(now()) @map("server_received_at")
+  deviceMetadata    Json      @default("{}") @map("device_metadata")
+  checksum          String?
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  deletedAt         DateTime? @map("deleted_at")
+
+  project      Project       @relation(fields: [projectId], references: [id])
+  formInstance FormInstance? @relation(fields: [formInstanceId], references: [id])
+  uploadedBy   User          @relation(fields: [uploadedByUserId], references: [id])
+
+  @@index([projectId])
+  @@index([formInstanceId])
+  @@index([organizationId])
+  @@index([captureTimestamp])
+  @@index([deletedAt])
+  @@map("file_attachments")
+}
+
+// ─── Offline Sync Idempotency ──────────────────────────────────────────────────
+
+model SyncActionReceipt {
+  id             String           @id @default(uuid()) @db.Uuid
+  clientActionId String           @unique @map("client_action_id")
+  userId         String           @map("user_id") @db.Uuid
+  batchId        String           @map("batch_id") @db.Uuid
+  actionType     SyncActionType   @map("action_type")
+  entityId       String           @map("entity_id") @db.Uuid
+  result         SyncActionResult
+  resultPayload  Json?            @map("result_payload")
+  processedAt    DateTime         @default(now()) @map("processed_at")
+
+  @@index([batchId])
+  @@index([userId])
+  @@map("sync_action_receipts")
+}
+
+// ─── Immutable Universal Audit Log (Black Box) ───────────────────────────────
+
+model AuditLog {
+  id                  String      @id @default(uuid()) @db.Uuid
+  organizationId      String?     @map("organization_id") @db.Uuid
+  projectId           String?     @map("project_id") @db.Uuid
+  userId              String?     @map("user_id") @db.Uuid
+  entityType          String      @map("entity_type")
+  entityId            String      @map("entity_id") @db.Uuid
+  action              String
+  source              AuditSource @default(API)
+  previousData        Json?       @map("previous_data")
+  newData             Json?       @map("new_data")
+  deviceTimestamp     DateTime?   @map("device_timestamp")
+  serverSyncTimestamp DateTime?   @map("server_sync_timestamp")
+  isConflictOverwrite Boolean     @default(false) @map("is_conflict_overwrite")
+  syncBatchId         String?     @map("sync_batch_id") @db.Uuid
+  clientActionId      String?     @map("client_action_id")
+  ipAddress           String?     @map("ip_address")
+  userAgent           String?     @map("user_agent")
+  metadata            Json        @default("{}")
+  createdAt           DateTime    @default(now()) @map("created_at")
+
+  @@index([organizationId])
+  @@index([projectId])
+  @@index([entityType, entityId])
+  @@index([source])
+  @@index([syncBatchId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ─── Workflow Engine (Sprint 3) ──────────────────────────────────────────────
+
+/// Per-project SLA & approval routing policy (defaults applied when absent)
+model WorkflowPolicy {
+  id                      String           @id @default(uuid()) @db.Uuid
+  projectId               String           @map("project_id") @db.Uuid
+  templateCode            StandardFormCode @map("template_code")
+  requiresInternalApproval Boolean         @default(true) @map("requires_internal_approval")
+  internalApproverOrgType OrganizationType @default(MAIN_CONTRACTOR) @map("internal_approver_org_type")
+  externalApproverOrgType OrganizationType @default(CONSULTANT) @map("external_approver_org_type")
+  externalSlaHours        Int              @default(48) @map("external_sla_hours")
+  createdAt               DateTime         @default(now()) @map("created_at")
+  updatedAt               DateTime         @updatedAt @map("updated_at")
+
+  project Project @relation(fields: [projectId], references: [id])
+
+  @@unique([projectId, templateCode])
+  @@map("workflow_policies")
+}
+
+/// Immutable approval trail — every workflow state transition
+model ApprovalRecord {
+  id             String             @id @default(uuid()) @db.Uuid
+  formInstanceId String             @map("form_instance_id") @db.Uuid
+  action         ApprovalActionType
+  fromStatus     FormInstanceStatus @map("from_status")
+  toStatus       FormInstanceStatus @map("to_status")
+  fromPhase      WorkflowPhase      @map("from_phase")
+  toPhase        WorkflowPhase      @map("to_phase")
+  actorUserId    String?            @map("actor_user_id") @db.Uuid
+  actorOrgId     String?            @map("actor_org_id") @db.Uuid
+  comments       String             @default("")
+  createdAt      DateTime           @default(now()) @map("created_at")
+
+  formInstance FormInstance @relation(fields: [formInstanceId], references: [id])
+  actor        User?        @relation(fields: [actorUserId], references: [id])
+
+  @@index([formInstanceId])
+  @@index([actorOrgId])
+  @@map("approval_records")
+}
+
+/// SLA breach escalations — Client-visible alert stream
+model SlaEscalation {
+  id             String             @id @default(uuid()) @db.Uuid
+  projectId      String             @map("project_id") @db.Uuid
+  formInstanceId String             @map("form_instance_id") @db.Uuid
+  severity       EscalationSeverity @default(CRITICAL)
+  message        String
+  messageAr      String?            @map("message_ar")
+  hoursOverdue   Decimal            @map("hours_overdue") @db.Decimal(8, 2)
+  acknowledged   Boolean            @default(false)
+  createdAt      DateTime           @default(now()) @map("created_at")
+
+  project      Project      @relation(fields: [projectId], references: [id])
+  formInstance FormInstance @relation(fields: [formInstanceId], references: [id])
+
+  @@index([projectId, acknowledged])
+  @@index([formInstanceId])
+  @@map("sla_escalations")
+}
+
+// ─── Smart Material Reconciliation (MIR → WIR/MDR) ───────────────────────────
+
+/// Quantity balance established when an MIR is externally approved
+model MaterialInventory {
+  id               String   @id @default(uuid()) @db.Uuid
+  projectId        String   @map("project_id") @db.Uuid
+  mirFormInstanceId String  @unique @map("mir_form_instance_id") @db.Uuid
+  materialCode     String   @map("material_code")
+  materialName     String   @map("material_name")
+  unit             String   @default("unit")
+  initialQuantity  Decimal  @map("initial_quantity") @db.Decimal(18, 4)
+  availableBalance Decimal  @map("available_balance") @db.Decimal(18, 4)
+  organizationId   String   @map("organization_id") @db.Uuid
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  project     Project               @relation(fields: [projectId], references: [id])
+  mirForm     FormInstance          @relation(fields: [mirFormInstanceId], references: [id])
+  ledgerEntries MaterialLedgerEntry[]
+
+  @@index([projectId, materialCode])
+  @@map("material_inventories")
+}
+
+/// Immutable ledger of all material quantity movements
+model MaterialLedgerEntry {
+  id                    String             @id @default(uuid()) @db.Uuid
+  inventoryId           String             @map("inventory_id") @db.Uuid
+  formInstanceId        String             @map("form_instance_id") @db.Uuid
+  ledgerType            MaterialLedgerType @map("ledger_type")
+  quantityDelta         Decimal            @map("quantity_delta") @db.Decimal(18, 4)
+  balanceBefore         Decimal            @map("balance_before") @db.Decimal(18, 4)
+  balanceAfter          Decimal            @map("balance_after") @db.Decimal(18, 4)
+  liabilityShiftRedAlert Boolean           @default(false) @map("liability_shift_red_alert")
+  notes                 String?
+  createdAt             DateTime           @default(now()) @map("created_at")
+
+  inventory    MaterialInventory @relation(fields: [inventoryId], references: [id])
+  formInstance FormInstance      @relation(fields: [formInstanceId], references: [id])
+
+  @@index([formInstanceId])
+  @@index([inventoryId])
+  @@index([liabilityShiftRedAlert])
+  @@map("material_ledger_entries")
+}
+
+// ─── Financial Engine — IPC (Sprint 4) ───────────────────────────────────────
+
+/// Interim Payment Certificate — Contractor invoice aggregating approved WIRs
+model InterimPaymentCertificate {
+  id                 String    @id @default(uuid()) @db.Uuid
+  projectId          String    @map("project_id") @db.Uuid
+  contractorOrgId    String    @map("contractor_org_id") @db.Uuid
+  certificateNumber  String    @map("certificate_number")
+  status             IpcStatus @default(DRAFT)
+  periodStart        DateTime? @map("period_start")
+  periodEnd          DateTime? @map("period_end")
+  subtotalAmount     Decimal   @default(0) @map("subtotal_amount") @db.Decimal(18, 4)
+  currency           String    @default("USD")
+  notes              String?
+  createdByUserId    String    @map("created_by_user_id") @db.Uuid
+  consultantReviewedAt DateTime? @map("consultant_reviewed_at")
+  clientApprovedAt   DateTime? @map("client_approved_at")
+  rejectedAt         DateTime? @map("rejected_at")
+  rejectionReason    String?   @map("rejection_reason")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+  deletedAt          DateTime? @map("deleted_at")
+
+  project       Project       @relation(fields: [projectId], references: [id])
+  contractorOrg Organization  @relation(fields: [contractorOrgId], references: [id])
+  createdBy     User          @relation("IpcCreator", fields: [createdByUserId], references: [id])
+  lineItems     IpcLineItem[]
+  billedForms   FormInstance[]
+
+  @@unique([projectId, certificateNumber])
+  @@index([projectId, status])
+  @@index([contractorOrgId])
+  @@index([deletedAt])
+  @@map("interim_payment_certificates")
+}
+
+/// One line per WIR — unique formInstanceId prevents double-billing
+model IpcLineItem {
+  id             String  @id @default(uuid()) @db.Uuid
+  ipcId          String  @map("ipc_id") @db.Uuid
+  formInstanceId String  @unique @map("form_instance_id") @db.Uuid
+  description    String
+  quantity       Decimal @db.Decimal(18, 4)
+  unit           String  @default("unit")
+  unitRate       Decimal @map("unit_rate") @db.Decimal(18, 4)
+  lineAmount     Decimal @map("line_amount") @db.Decimal(18, 4)
+  sortOrder      Int     @default(0) @map("sort_order")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  ipc          InterimPaymentCertificate @relation(fields: [ipcId], references: [id])
+  formInstance FormInstance              @relation(fields: [formInstanceId], references: [id])
+
+  @@index([ipcId])
+  @@map("ipc_line_items")
+}
+
+// ─── Blind Laboratory Testing (Sprint 4) ───────────────────────────────────────
+
+/// Anonymous test request — lab sees barcode only, not contractor identity
+model LabTestRequest {
+  id                String               @id @default(uuid()) @db.Uuid
+  projectId         String               @map("project_id") @db.Uuid
+  formInstanceId    String               @map("form_instance_id") @db.Uuid
+  barcode           String               @unique
+  testType          String               @map("test_type")
+  anonymousLabel    String               @map("anonymous_label")
+  status            LabTestRequestStatus @default(PENDING)
+  requestedByUserId String               @map("requested_by_user_id") @db.Uuid
+  requestedByOrgId  String               @map("requested_by_org_id") @db.Uuid
+  createdAt         DateTime             @default(now()) @map("created_at")
+  updatedAt         DateTime             @updatedAt @map("updated_at")
+
+  project     Project        @relation(fields: [projectId], references: [id])
+  formInstance FormInstance  @relation(fields: [formInstanceId], references: [id])
+  requestedBy User          @relation("LabTestRequester", fields: [requestedByUserId], references: [id])
+  result      LabTestResult?
+
+  @@index([projectId])
+  @@index([formInstanceId])
+  @@index([status])
+  @@map("lab_test_requests")
+}
+
+/// Blind test result — submitted by Laboratory using barcode lookup only
+model LabTestResult {
+  id                String              @id @default(uuid()) @db.Uuid
+  requestId         String              @unique @map("request_id") @db.Uuid
+  submittedByUserId String              @map("submitted_by_user_id") @db.Uuid
+  laboratoryOrgId   String              @map("laboratory_org_id") @db.Uuid
+  resultStatus      LabTestResultStatus @map("result_status")
+  metrics           Json                @default("{}")
+  reportNotes       String?             @map("report_notes")
+  submittedAt       DateTime            @default(now()) @map("submitted_at")
+
+  request     LabTestRequest @relation(fields: [requestId], references: [id])
+  submittedBy User           @relation(fields: [submittedByUserId], references: [id])
+
+  @@index([laboratoryOrgId])
+  @@index([resultStatus])
+  @@map("lab_test_results")
+}

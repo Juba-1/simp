@@ -1,0 +1,3 @@
+-- Promote an existing user to Super Admin (run once in Supabase SQL editor)
+-- Replace the email with your platform operator account:
+-- UPDATE users SET is_super_admin = true WHERE email = 'you@company.com';
