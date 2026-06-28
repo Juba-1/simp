@@ -13,7 +13,6 @@ import { OrganizationsModule } from './modules/organizations/organizations.modul
 import { ProjectsModule } from './modules/projects/projects.module';
 import { FormsModule } from './modules/forms/forms.module';
 import { SyncModule } from './modules/sync/sync.module';
-import { UploadsModule } from './modules/uploads/uploads.module';
 import { WorkflowsModule } from './modules/workflows/workflows.module';
 import { SlaModule } from './modules/sla/sla.module';
 import { MaterialsModule } from './modules/materials/materials.module';
@@ -41,7 +40,6 @@ import { SystemModule } from './modules/system/system.module';
     ProjectsModule,
     FormsModule,
     SyncModule,
-    UploadsModule,
     WorkflowsModule,
     SlaModule,
     MaterialsModule,
